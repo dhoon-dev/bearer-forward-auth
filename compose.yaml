@@ -15,7 +15,7 @@ services:
       - "${BEARER_AUTH_LOG_LEVEL:-INFO}"
     user: "${BEARER_AUTH_UID:-1000}:${BEARER_AUTH_GID:-1000}"
     volumes:
-      - "${BEARER_AUTH_TOKENS_SOURCE:-./tokens/tokens.txt}:${BEARER_AUTH_TOKENS_FILE:-/run/tokens/tokens.txt}:ro"
+      - "${BEARER_AUTH_TOKENS_DIR:-./tokens}:/run/tokens:ro"
     expose:
       - "${BEARER_AUTH_PORT:-8080}"
     networks:

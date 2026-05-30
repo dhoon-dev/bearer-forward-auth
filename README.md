@@ -14,7 +14,7 @@ It is designed for reverse-proxy external auth flows such as Traefik ForwardAuth
   - Returns `200 OK`
   - Does not require authentication
 
-Tokens are loaded once at startup. Restart the process or container after editing the token file.
+Tokens are loaded at startup and automatically reloaded on the next `/auth` request after the token file changes.
 
 ## Token File
 
@@ -28,6 +28,17 @@ sk-local-def...
 ```
 
 Do not commit real token files. Mount them at runtime.
+
+When editing tokens during operation, prefer replacing the file atomically instead of truncating and rewriting it in place. The service reloads tokens on the next `/auth` request after detecting a file change, so a request that arrives while the file is partially written can temporarily read an empty or incomplete token set and return `401 Unauthorized` for otherwise valid tokens.
+
+Example atomic update:
+
+```sh
+tmp="$(mktemp tokens/tokens.txt.XXXXXX)"
+printf '%s\n' 'sk-local-new-token' > "$tmp"
+chmod 600 "$tmp"
+mv "$tmp" tokens/tokens.txt
+```
 
 ## CLI
 
@@ -102,7 +113,7 @@ cp .env.example .env
 ```dotenv
 BEARER_AUTH_HOST=0.0.0.0
 BEARER_AUTH_PORT=8080
-BEARER_AUTH_TOKENS_SOURCE=./tokens/tokens.txt
+BEARER_AUTH_TOKENS_DIR=./tokens
 BEARER_AUTH_TOKENS_FILE=/run/tokens/tokens.txt
 BEARER_AUTH_LOG_LEVEL=INFO
 BEARER_AUTH_UID=1000
@@ -118,7 +129,7 @@ The included Compose file:
 - Does not publish host ports
 - Connects the service to the external `proxy` network
 - Reads runtime settings from `.env`
-- Mounts `${BEARER_AUTH_TOKENS_SOURCE}` read-only at `${BEARER_AUTH_TOKENS_FILE}`
+- Mounts `${BEARER_AUTH_TOKENS_DIR}` read-only at `/run/tokens`
 - Runs as `${BEARER_AUTH_UID:-1000}:${BEARER_AUTH_GID:-1000}` so a host-owned `0600` token file can remain private
 
 The service is reachable to other containers on the `proxy` network at:

@@ -9,7 +9,7 @@ from typing import Annotated, cast
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 
 from bearer_auth.auth import is_authorized
-from bearer_auth.tokens import load_tokens
+from bearer_auth.tokens import TokenStore
 
 LOGGER = logging.getLogger("bearer-auth")
 
@@ -19,9 +19,10 @@ def create_app(tokens_file: Path) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """Load the token file once when FastAPI starts."""
-        tokens = load_tokens(tokens_file)
-        _app.state.tokens = tokens
+        """Load the token file when FastAPI starts."""
+        token_store = TokenStore(tokens_file)
+        tokens = token_store.reload()
+        _app.state.token_store = token_store
         LOGGER.info("loaded %s token(s) from %s", len(tokens), tokens_file)
         yield
 
@@ -42,7 +43,8 @@ def create_app(tokens_file: Path) -> FastAPI:
         authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     ) -> Response:
         """Validate a bearer token for Traefik ForwardAuth."""
-        tokens = cast("frozenset[str]", request.app.state.tokens)
+        token_store = cast("TokenStore", request.app.state.token_store)
+        tokens = token_store.get_tokens()
 
         if is_authorized(authorization, tokens):
             return Response(status_code=status.HTTP_204_NO_CONTENT)

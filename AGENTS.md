@@ -9,6 +9,7 @@ The service checks `Authorization: Bearer <token>` against a newline-delimited t
 - `204 No Content` for allowed tokens
 - `401 Unauthorized` for missing, malformed, or unknown tokens
 - `200 OK` for unauthenticated `/health`
+- Token file changes must be detected on the next `/auth` request without restarting the process
 
 ## Architecture Rules
 
@@ -18,7 +19,7 @@ Keep business logic and IO adapters separated:
   - Pure bearer-token parsing and authorization decisions
   - No FastAPI, Typer, Rich, file IO, logging, or process startup
 - `src/bearer_auth/tokens.py`
-  - Token file loading only
+  - Token file loading and change detection only
   - Ignore empty lines and lines starting with `#`
   - Never log token values
 - `src/bearer_auth/api.py`
@@ -48,6 +49,8 @@ Do not add runtime configuration through environment variables unless there is a
 - Never log bearer token values.
 - Keep real token files out of Git.
 - Keep `tokens/tokens.txt` as an example or local runtime file only.
+- Mount the token directory, not only the token file, so atomic file replacements are visible inside the container.
+- Warn users that in-place token file rewrites can temporarily produce incomplete reads and `401 Unauthorized`; prefer atomic replacement until lock-based updates are implemented.
 - Keep the upstream `Authorization` header stripping warning in documentation when showing proxy examples.
 - `/health` must remain unauthenticated.
 - `/auth` success must remain `204 No Content`; auth failure must remain `401 Unauthorized`.
@@ -145,7 +148,7 @@ The Compose service should:
 
 - Not publish host ports
 - Join the external `proxy` network
-- Mount the token file read-only
+- Mount the token directory read-only
 - Read runtime settings from `.env` via `BEARER_AUTH_*` variables
 - Run with a configurable UID/GID so private host-owned token files can be read
 

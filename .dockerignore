@@ -2,6 +2,7 @@
 .env
 .ruff_cache
 .ty
+.docker-build-config
 __pycache__
 *.py[cod]
 dist
