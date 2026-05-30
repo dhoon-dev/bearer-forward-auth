@@ -1,0 +1,1 @@
+"""Bearer auth service package."""

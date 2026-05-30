@@ -1,0 +1,40 @@
+services:
+  bearer-auth:
+    image: bearer-auth:local
+    container_name: bearer-auth
+    build:
+      context: .
+    command:
+      - --host
+      - "${BEARER_AUTH_HOST:-0.0.0.0}"
+      - --port
+      - "${BEARER_AUTH_PORT:-8080}"
+      - --tokens-file
+      - "${BEARER_AUTH_TOKENS_FILE:-/run/tokens/tokens.txt}"
+      - --log-level
+      - "${BEARER_AUTH_LOG_LEVEL:-INFO}"
+    user: "${BEARER_AUTH_UID:-1000}:${BEARER_AUTH_GID:-1000}"
+    volumes:
+      - "${BEARER_AUTH_TOKENS_SOURCE:-./tokens/tokens.txt}:${BEARER_AUTH_TOKENS_FILE:-/run/tokens/tokens.txt}:ro"
+    expose:
+      - "${BEARER_AUTH_PORT:-8080}"
+    networks:
+      proxy:
+        aliases:
+          - bearer-auth
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - "import sys, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:${BEARER_AUTH_PORT:-8080}/health', timeout=3); sys.exit(0 if response.status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  proxy:
+    name: proxy
+    external: true
