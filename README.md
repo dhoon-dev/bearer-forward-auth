@@ -16,6 +16,7 @@ It is designed for reverse-proxy external auth flows such as Traefik ForwardAuth
   - Does not require authentication
 
 Tokens are loaded at startup and automatically reloaded on the next `/auth` request after the token file changes.
+Each `/auth` request writes an access log entry with the HTTP method, status, decision reason, host source, normalized domain when available, token name when a configured token matched, and client address. Bearer token values are never logged.
 
 ## Token File
 
@@ -26,11 +27,11 @@ The token file is sectioned by domain:
 # Empty lines are ignored.
 
 [api.example.com]
-sk-api-abc...
-sk-api-def... expires=2026-12-31T23:59:59Z
+api-local sk-api-abc...
+api-ci sk-api-def... expires=2026-12-31T23:59:59Z
 
 [admin.example.com]
-sk-admin-abc...
+admin-local sk-admin-abc...
 ```
 
 Section names are normalized before comparison:
@@ -40,11 +41,13 @@ Section names are normalized before comparison:
 - non-ASCII domains are rejected; use punycode section names for IDNs
 - URLs, paths, IP literals, wildcard domains, malformed labels, and invalid ports are rejected
 
-Tokens must appear inside a domain section. Add optional per-token expiration metadata after the token:
+Tokens must appear inside a domain section. Each token line must start with a token name, followed by the bearer token value and optional expiration metadata:
 
 ```text
-sk-api-abc... expires=2026-12-31T23:59:59Z
+api-ci sk-api-abc... expires=2026-12-31T23:59:59Z
 ```
+
+Names are required and are used in access logs so you can identify which configured token matched without exposing the token value. Token names must be printable ASCII without whitespace. Non-ASCII characters, spaces, tabs, newlines, empty names, and control characters are rejected. Printable ASCII punctuation such as `.`, `_`, `-`, `@`, `:`, `/`, and `=` is allowed in names.
 
 Expiration values must be timezone-aware ISO 8601 timestamps. Use `Z` for UTC, or an explicit offset such as `+09:00`. Expired tokens return `401 Unauthorized`; tokens without `expires=...` do not expire.
 
@@ -56,7 +59,7 @@ Example atomic update:
 
 ```sh
 tmp="$(mktemp tokens/tokens.txt.XXXXXX)"
-printf '%s\n' '[api.example.com]' 'sk-local-new-token' > "$tmp"
+printf '%s\n' '[api.example.com]' 'api-local sk-local-new-token' > "$tmp"
 chmod 600 "$tmp"
 mv "$tmp" tokens/tokens.txt
 ```

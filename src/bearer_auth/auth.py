@@ -19,6 +19,7 @@ DOMAIN_PATTERN = re.compile(r"^[a-z0-9.-]+$")
 class TokenEntry:
     """Authorization metadata for a bearer token."""
 
+    name: str
     expires_at: datetime | None = None
 
     def is_valid_at(self, now: datetime) -> bool:
@@ -32,6 +33,16 @@ class TokenEntry:
 
 type AllowedTokens = Mapping[str, TokenEntry]
 type TokensByDomain = Mapping[str, AllowedTokens]
+
+
+@dataclass(frozen=True)
+class AuthorizationResult:
+    """Bearer authorization decision with safe metadata for adapters."""
+
+    authorized: bool
+    reason: str
+    domain: str | None = None
+    token_name: str | None = None
 
 
 def extract_bearer_token(authorization: str | None) -> str | None:
@@ -52,12 +63,39 @@ def is_authorized(
     now: datetime,
 ) -> bool:
     """Return whether an Authorization header contains an allowed bearer token."""
+    return get_authorization_result(authorization, allowed_tokens, now).authorized
+
+
+def get_authorization_result(
+    authorization: str | None,
+    allowed_tokens: AllowedTokens,
+    now: datetime,
+    *,
+    domain: str | None = None,
+) -> AuthorizationResult:
+    """Return whether a bearer token is allowed, plus non-secret decision metadata."""
     token = extract_bearer_token(authorization)
     if token is None:
-        return False
+        return AuthorizationResult(authorized=False, reason="invalid_authorization", domain=domain)
 
     token_entry = allowed_tokens.get(token)
-    return token_entry is not None and token_entry.is_valid_at(now)
+    if token_entry is None:
+        return AuthorizationResult(authorized=False, reason="unknown_token", domain=domain)
+
+    if not token_entry.is_valid_at(now):
+        return AuthorizationResult(
+            authorized=False,
+            reason="expired_token",
+            domain=domain,
+            token_name=token_entry.name,
+        )
+
+    return AuthorizationResult(
+        authorized=True,
+        reason="allowed",
+        domain=domain,
+        token_name=token_entry.name,
+    )
 
 
 def normalize_domain(value: str | None) -> str | None:
@@ -141,8 +179,22 @@ def is_domain_authorized(
     now: datetime,
 ) -> bool:
     """Return whether a bearer token is allowed for the request host."""
+    return get_domain_authorization_result(host, authorization, tokens_by_domain, now).authorized
+
+
+def get_domain_authorization_result(
+    host: str | None,
+    authorization: str | None,
+    tokens_by_domain: TokensByDomain,
+    now: datetime,
+) -> AuthorizationResult:
+    """Return a domain-scoped authorization decision with safe metadata."""
     domain = normalize_domain(host)
     if domain is None:
-        return False
+        return AuthorizationResult(authorized=False, reason="invalid_host")
 
-    return is_authorized(authorization, tokens_by_domain.get(domain, {}), now)
+    allowed_tokens = tokens_by_domain.get(domain)
+    if allowed_tokens is None:
+        return AuthorizationResult(authorized=False, reason="unknown_domain", domain=domain)
+
+    return get_authorization_result(authorization, allowed_tokens, now, domain=domain)

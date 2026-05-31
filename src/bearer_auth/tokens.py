@@ -10,7 +10,10 @@ from bearer_auth.auth import TokenEntry, normalize_domain
 type TokensByDomain = Mapping[str, Mapping[str, TokenEntry]]
 
 EXPIRATION_FIELD = "expires"
-MAX_TOKEN_ENTRY_PARTS = 2
+NAME_FIELD = "name"
+TOKEN_METADATA_FIELDS = frozenset({EXPIRATION_FIELD})
+RESERVED_TOKEN_FIELDS = frozenset({EXPIRATION_FIELD, NAME_FIELD})
+MIN_TOKEN_ENTRY_PARTS = 2
 
 
 @dataclass(frozen=True)
@@ -97,20 +100,43 @@ def parse_domain_section(file_path: Path, line_number: int, line: str) -> str:
 
 
 def parse_token_entry(file_path: Path, line_number: int, line: str) -> tuple[str, TokenEntry]:
-    """Parse a bearer token and its optional metadata."""
+    """Parse a required token name, bearer token, and optional metadata."""
     parts = line.split()
-    if len(parts) > MAX_TOKEN_ENTRY_PARTS:
+    if len(parts) < MIN_TOKEN_ENTRY_PARTS:
         raise token_file_error(file_path, line_number, "invalid token entry")
 
-    token = parts[0]
-    if len(parts) == 1:
-        return token, TokenEntry()
+    name = parse_token_name(file_path, line_number, parts[0])
+    token = parts[1]
+    if is_reserved_field_assignment(token):
+        raise token_file_error(file_path, line_number, "invalid token entry")
 
-    key, separator, value = parts[1].partition("=")
-    if key != EXPIRATION_FIELD or separator != "=" or not value:
-        raise token_file_error(file_path, line_number, "invalid token metadata")
+    metadata: dict[str, str] = {}
+    for part in parts[2:]:
+        key, separator, value = part.partition("=")
+        if key not in TOKEN_METADATA_FIELDS or separator != "=" or not value or key in metadata:
+            raise token_file_error(file_path, line_number, "invalid token metadata")
 
-    return token, TokenEntry(expires_at=parse_token_expiration(file_path, line_number, value))
+        metadata[key] = value
+
+    expires_at = None
+    if expiration_value := metadata.get(EXPIRATION_FIELD):
+        expires_at = parse_token_expiration(file_path, line_number, expiration_value)
+
+    return token, TokenEntry(expires_at=expires_at, name=name)
+
+
+def is_reserved_field_assignment(value: str) -> bool:
+    """Return whether a token value looks like a reserved metadata assignment."""
+    key, separator, _value = value.partition("=")
+    return separator == "=" and key in RESERVED_TOKEN_FIELDS
+
+
+def parse_token_name(file_path: Path, line_number: int, value: str) -> str:
+    """Parse a log-safe token display name."""
+    if not value.isascii() or any(char.isspace() or not char.isprintable() for char in value):
+        raise token_file_error(file_path, line_number, "token name must be printable ASCII")
+
+    return value
 
 
 def parse_token_expiration(file_path: Path, line_number: int, value: str) -> datetime:
