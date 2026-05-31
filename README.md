@@ -1,6 +1,6 @@
 # bearer-auth
 
-Small FastAPI service for checking `Authorization: Bearer <token>` headers.
+Small FastAPI service for checking `Authorization: Bearer <token>` headers per domain.
 
 It is designed for reverse-proxy external auth flows such as Traefik ForwardAuth, NGINX `auth_request`, or Caddy `forward_auth`. The service returns `204 No Content` when the bearer token is allowed and `401 Unauthorized` otherwise.
 
@@ -8,8 +8,9 @@ It is designed for reverse-proxy external auth flows such as Traefik ForwardAuth
 
 - `GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS /auth`
   - Reads `Authorization: Bearer <token>`
-  - Returns `204 No Content` when the token exists in the token file
-  - Returns `401 Unauthorized` when the header is missing, malformed, or unknown
+  - Reads the request domain from `X-Forwarded-Host`, falling back to `Host`
+  - Returns `204 No Content` when the token exists under that domain in the token file
+  - Returns `401 Unauthorized` when the domain or bearer token is missing, malformed, or unknown
 - `GET|HEAD /health`
   - Returns `200 OK`
   - Does not require authentication
@@ -18,16 +19,28 @@ Tokens are loaded at startup and automatically reloaded on the next `/auth` requ
 
 ## Token File
 
-The token file is newline-delimited:
+The token file is sectioned by domain:
 
 ```text
 # Lines starting with # are ignored.
 # Empty lines are ignored.
-sk-local-abc...
-sk-local-def...
+
+[api.example.com]
+sk-api-abc...
+sk-api-def...
+
+[admin.example.com]
+sk-admin-abc...
 ```
 
-Do not commit real token files. Mount them at runtime.
+Section names are normalized before comparison:
+
+- `Example.COM` and `example.com.` become `example.com`
+- `example.com:443` becomes `example.com`
+- non-ASCII domains are rejected; use punycode section names for IDNs
+- URLs, paths, IP literals, wildcard domains, malformed labels, and invalid ports are rejected
+
+Tokens must appear inside a domain section. Do not commit real token files. Mount them at runtime.
 
 When editing tokens during operation, prefer replacing the file atomically instead of truncating and rewriting it in place. The service reloads tokens on the next `/auth` request after detecting a file change, so a request that arrives while the file is partially written can temporarily read an empty or incomplete token set and return `401 Unauthorized` for otherwise valid tokens.
 
@@ -35,7 +48,7 @@ Example atomic update:
 
 ```sh
 tmp="$(mktemp tokens/tokens.txt.XXXXXX)"
-printf '%s\n' 'sk-local-new-token' > "$tmp"
+printf '%s\n' '[api.example.com]' 'sk-local-new-token' > "$tmp"
 chmod 600 "$tmp"
 mv "$tmp" tokens/tokens.txt
 ```
@@ -146,6 +159,26 @@ Override values by editing `.env`, or pass them for one command:
 BEARER_AUTH_PORT=8080 BEARER_AUTH_UID="$(id -u)" BEARER_AUTH_GID="$(id -g)" docker compose up -d --build
 ```
 
+## Proxy Host Header
+
+Domain matching uses `X-Forwarded-Host` first and falls back to `Host`. In production, keep this service reachable only from the reverse proxy and configure the proxy to set or overwrite the forwarded host header for auth requests.
+
+For NGINX `auth_request`, set the forwarded host explicitly:
+
+```nginx
+location = /_auth {
+    internal;
+
+    proxy_pass http://bearer-auth:8080/auth;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header Authorization $http_authorization;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+}
+```
+
+Do not pass a client-supplied `X-Forwarded-Host` through unchanged. For Traefik ForwardAuth, Traefik sends `X-Forwarded-Host` to the auth service; keep the auth service unpublished on the host and do not enable broad forwarded-header trust unless the entrypoint is already restricted to trusted proxies.
+
 ## Traefik Example
 
 Remove direct host port publishing from the upstream service and attach it to the `proxy` network. Apply the auth middleware before stripping the `Authorization` header, so the auth service sees the bearer token but the upstream service does not.
@@ -201,8 +234,8 @@ Use Conventional Commits for commit messages. See `AGENTS.md` for the project ru
 
 ```text
 src/bearer_auth/
-├── auth.py      # Pure bearer-token parsing and authorization rules
-├── tokens.py    # Token file loading
+├── auth.py      # Pure bearer-token/domain parsing and authorization rules
+├── tokens.py    # Sectioned token file loading
 ├── api.py       # FastAPI adapter
 ├── cli.py       # Typer/Rich CLI and Uvicorn process runner
 └── server.py    # Compatibility ASGI/module entrypoint

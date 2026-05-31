@@ -1,6 +1,16 @@
 """Bearer token validation rules."""
 
+import re
+from collections.abc import Mapping
+from ipaddress import ip_address
+
 BEARER_TOKEN_PARTS = 2
+MAX_DOMAIN_LENGTH = 253
+MAX_DOMAIN_LABEL_LENGTH = 63
+MIN_PORT = 1
+MAX_PORT = 65535
+
+DOMAIN_PATTERN = re.compile(r"^[a-z0-9.-]+$")
 
 
 def extract_bearer_token(authorization: str | None) -> str | None:
@@ -19,3 +29,90 @@ def is_authorized(authorization: str | None, allowed_tokens: frozenset[str]) -> 
     """Return whether an Authorization header contains an allowed bearer token."""
     token = extract_bearer_token(authorization)
     return bool(token and token in allowed_tokens)
+
+
+def normalize_domain(value: str | None) -> str | None:
+    """Return the canonical ASCII domain form for auth comparisons."""
+    domain = strip_optional_port(value)
+    if domain is None:
+        return None
+
+    domain = domain.rstrip(".").lower()
+    if is_valid_domain(domain):
+        return domain
+
+    return None
+
+
+def strip_optional_port(value: str | None) -> str | None:
+    """Remove a valid host port when one is present."""
+    if not value:
+        return None
+
+    domain = value.strip()
+    if not domain or "://" in domain or "/" in domain or "\\" in domain or "@" in domain:
+        return None
+
+    if domain.startswith("["):
+        return None
+
+    if ":" in domain:
+        domain, port = domain.rsplit(":", 1)
+        if not is_valid_port(port) or not domain or ":" in domain:
+            return None
+
+    return domain
+
+
+def is_valid_port(value: str) -> bool:
+    """Return whether a host port is in range."""
+    if not value.isdigit():
+        return False
+
+    port_number = int(value)
+    return MIN_PORT <= port_number <= MAX_PORT
+
+
+def is_valid_domain(domain: str) -> bool:
+    """Return whether a normalized domain is allowed."""
+    if not domain or len(domain) > MAX_DOMAIN_LENGTH or not DOMAIN_PATTERN.fullmatch(domain):
+        return False
+    if is_ip_address(domain):
+        return False
+
+    try:
+        domain.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+
+    labels = domain.split(".")
+    return not any(
+        not label
+        or len(label) > MAX_DOMAIN_LABEL_LENGTH
+        or label.startswith("-")
+        or label.endswith("-")
+        for label in labels
+    )
+
+
+def is_ip_address(value: str) -> bool:
+    """Return whether a host value is an IP literal."""
+    try:
+        ip_address(value)
+    except ValueError:
+        return False
+
+    return True
+
+
+def is_domain_authorized(
+    host: str | None,
+    authorization: str | None,
+    tokens_by_domain: Mapping[str, frozenset[str]],
+) -> bool:
+    """Return whether a bearer token is allowed for the request host."""
+    domain = normalize_domain(host)
+    if domain is None:
+        return False
+
+    return is_authorized(authorization, tokens_by_domain.get(domain, frozenset()))

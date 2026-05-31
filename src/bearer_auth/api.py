@@ -8,10 +8,11 @@ from typing import Annotated, cast
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 
-from bearer_auth.auth import is_authorized
+from bearer_auth.auth import is_domain_authorized
 from bearer_auth.tokens import TokenStore
 
 LOGGER = logging.getLogger("bearer-auth")
+FORWARDED_HOST_HEADER = "X-Forwarded-Host"
 
 
 def create_app(tokens_file: Path) -> FastAPI:
@@ -21,9 +22,15 @@ def create_app(tokens_file: Path) -> FastAPI:
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         """Load the token file when FastAPI starts."""
         token_store = TokenStore(tokens_file)
-        tokens = token_store.reload()
+        tokens_by_domain = token_store.reload()
         _app.state.token_store = token_store
-        LOGGER.info("loaded %s token(s) from %s", len(tokens), tokens_file)
+        token_count = sum(len(tokens) for tokens in tokens_by_domain.values())
+        LOGGER.info(
+            "loaded %s token(s) for %s domain(s) from %s",
+            token_count,
+            len(tokens_by_domain),
+            tokens_file,
+        )
         yield
 
     app = FastAPI(title="bearer-auth", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -41,12 +48,15 @@ def create_app(tokens_file: Path) -> FastAPI:
     async def auth(
         request: Request,
         authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+        forwarded_host: Annotated[str | None, Header(alias=FORWARDED_HOST_HEADER)] = None,
+        host: Annotated[str | None, Header(alias="Host")] = None,
     ) -> Response:
         """Validate a bearer token for Traefik ForwardAuth."""
         token_store = cast("TokenStore", request.app.state.token_store)
-        tokens = token_store.get_tokens()
+        tokens_by_domain = token_store.get_tokens()
+        request_host = forwarded_host or host
 
-        if is_authorized(authorization, tokens):
+        if is_domain_authorized(request_host, authorization, tokens_by_domain):
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         raise HTTPException(
