@@ -2,6 +2,8 @@
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from ipaddress import ip_address
 
 BEARER_TOKEN_PARTS = 2
@@ -11,6 +13,25 @@ MIN_PORT = 1
 MAX_PORT = 65535
 
 DOMAIN_PATTERN = re.compile(r"^[a-z0-9.-]+$")
+
+
+@dataclass(frozen=True)
+class TokenEntry:
+    """Authorization metadata for a bearer token."""
+
+    expires_at: datetime | None = None
+
+    def is_valid_at(self, now: datetime) -> bool:
+        """Return whether the token has not expired at the given time."""
+        if now.tzinfo is None or now.utcoffset() is None:
+            msg = "now must be timezone-aware"
+            raise ValueError(msg)
+
+        return self.expires_at is None or now.astimezone(UTC) < self.expires_at
+
+
+type AllowedTokens = Mapping[str, TokenEntry]
+type TokensByDomain = Mapping[str, AllowedTokens]
 
 
 def extract_bearer_token(authorization: str | None) -> str | None:
@@ -25,10 +46,18 @@ def extract_bearer_token(authorization: str | None) -> str | None:
     return parts[1]
 
 
-def is_authorized(authorization: str | None, allowed_tokens: frozenset[str]) -> bool:
+def is_authorized(
+    authorization: str | None,
+    allowed_tokens: AllowedTokens,
+    now: datetime,
+) -> bool:
     """Return whether an Authorization header contains an allowed bearer token."""
     token = extract_bearer_token(authorization)
-    return bool(token and token in allowed_tokens)
+    if token is None:
+        return False
+
+    token_entry = allowed_tokens.get(token)
+    return token_entry is not None and token_entry.is_valid_at(now)
 
 
 def normalize_domain(value: str | None) -> str | None:
@@ -108,11 +137,12 @@ def is_ip_address(value: str) -> bool:
 def is_domain_authorized(
     host: str | None,
     authorization: str | None,
-    tokens_by_domain: Mapping[str, frozenset[str]],
+    tokens_by_domain: TokensByDomain,
+    now: datetime,
 ) -> bool:
     """Return whether a bearer token is allowed for the request host."""
     domain = normalize_domain(host)
     if domain is None:
         return False
 
-    return is_authorized(authorization, tokens_by_domain.get(domain, frozenset()))
+    return is_authorized(authorization, tokens_by_domain.get(domain, {}), now)

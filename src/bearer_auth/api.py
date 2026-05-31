@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -56,7 +57,7 @@ def create_app(tokens_file: Path) -> FastAPI:
         tokens_by_domain = token_store.get_tokens()
         request_host = forwarded_host or host
 
-        if is_domain_authorized(request_host, authorization, tokens_by_domain):
+        if is_domain_authorized(request_host, authorization, tokens_by_domain, datetime.now(UTC)):
             return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         raise HTTPException(

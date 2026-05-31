@@ -27,7 +27,7 @@ The token file is sectioned by domain:
 
 [api.example.com]
 sk-api-abc...
-sk-api-def...
+sk-api-def... expires=2026-12-31T23:59:59Z
 
 [admin.example.com]
 sk-admin-abc...
@@ -40,7 +40,15 @@ Section names are normalized before comparison:
 - non-ASCII domains are rejected; use punycode section names for IDNs
 - URLs, paths, IP literals, wildcard domains, malformed labels, and invalid ports are rejected
 
-Tokens must appear inside a domain section. Do not commit real token files. Mount them at runtime.
+Tokens must appear inside a domain section. Add optional per-token expiration metadata after the token:
+
+```text
+sk-api-abc... expires=2026-12-31T23:59:59Z
+```
+
+Expiration values must be timezone-aware ISO 8601 timestamps. Use `Z` for UTC, or an explicit offset such as `+09:00`. Expired tokens return `401 Unauthorized`; tokens without `expires=...` do not expire.
+
+Do not commit real token files. Mount them at runtime.
 
 When editing tokens during operation, prefer replacing the file atomically instead of truncating and rewriting it in place. The service reloads tokens on the next `/auth` request after detecting a file change, so a request that arrives while the file is partially written can temporarily read an empty or incomplete token set and return `401 Unauthorized` for otherwise valid tokens.
 

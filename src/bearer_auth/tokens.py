@@ -2,11 +2,15 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
-from bearer_auth.auth import normalize_domain
+from bearer_auth.auth import TokenEntry, normalize_domain
 
-type TokensByDomain = Mapping[str, frozenset[str]]
+type TokensByDomain = Mapping[str, Mapping[str, TokenEntry]]
+
+EXPIRATION_FIELD = "expires"
+MAX_TOKEN_ENTRY_PARTS = 2
 
 
 @dataclass(frozen=True)
@@ -60,7 +64,7 @@ class TokenFileError(ValueError):
 
 def load_tokens(file_path: Path) -> TokensByDomain:
     """Load bearer tokens from a sectioned token file."""
-    tokens_by_domain: dict[str, set[str]] = {}
+    tokens_by_domain: dict[str, dict[str, TokenEntry]] = {}
     current_domain: str | None = None
 
     with file_path.open(encoding="utf-8") as token_file:
@@ -71,15 +75,16 @@ def load_tokens(file_path: Path) -> TokensByDomain:
 
             if line.startswith("[") and line.endswith("]"):
                 current_domain = parse_domain_section(file_path, line_number, line)
-                tokens_by_domain.setdefault(current_domain, set())
+                tokens_by_domain.setdefault(current_domain, {})
                 continue
 
             if current_domain is None:
                 raise token_file_error(file_path, line_number, "token entry before domain section")
 
-            tokens_by_domain[current_domain].add(line)
+            token, token_entry = parse_token_entry(file_path, line_number, line)
+            tokens_by_domain[current_domain][token] = token_entry
 
-    return {domain: frozenset(tokens) for domain, tokens in tokens_by_domain.items()}
+    return tokens_by_domain
 
 
 def parse_domain_section(file_path: Path, line_number: int, line: str) -> str:
@@ -89,6 +94,37 @@ def parse_domain_section(file_path: Path, line_number: int, line: str) -> str:
         raise token_file_error(file_path, line_number, "invalid domain section")
 
     return domain
+
+
+def parse_token_entry(file_path: Path, line_number: int, line: str) -> tuple[str, TokenEntry]:
+    """Parse a bearer token and its optional metadata."""
+    parts = line.split()
+    if len(parts) > MAX_TOKEN_ENTRY_PARTS:
+        raise token_file_error(file_path, line_number, "invalid token entry")
+
+    token = parts[0]
+    if len(parts) == 1:
+        return token, TokenEntry()
+
+    key, separator, value = parts[1].partition("=")
+    if key != EXPIRATION_FIELD or separator != "=" or not value:
+        raise token_file_error(file_path, line_number, "invalid token metadata")
+
+    return token, TokenEntry(expires_at=parse_token_expiration(file_path, line_number, value))
+
+
+def parse_token_expiration(file_path: Path, line_number: int, value: str) -> datetime:
+    """Parse a timezone-aware token expiration timestamp."""
+    normalized_value = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    try:
+        expires_at = datetime.fromisoformat(normalized_value)
+    except ValueError as error:
+        raise token_file_error(file_path, line_number, "invalid token expiration") from error
+
+    if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+        raise token_file_error(file_path, line_number, "token expiration must include a timezone")
+
+    return expires_at.astimezone(UTC)
 
 
 def token_file_error(file_path: Path, line_number: int, detail: str) -> TokenFileError:
